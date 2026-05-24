@@ -1,7 +1,9 @@
 package tui
 
 import (
+	"bufio"
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
 
@@ -18,18 +20,52 @@ func (m model) Init() tea.Cmd {
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var (
 		tiCmd tea.Cmd
+		siCmd tea.Cmd
 		vpCmd tea.Cmd
 	)
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		if m.saving {
+			switch msg.Type {
+			case tea.KeyEnter:
+				filename := m.saveInput.Value()
+				if filename == "" {
+					filename = "output.log"
+				}
+				err := m.saveToFile(filename)
+				if err != nil {
+					m.lastSaved = "Error saving: " + err.Error()
+				} else {
+					m.lastSaved = "Saved to " + filename
+				}
+				m.saving = false
+				m.saveInput.Blur()
+				m.textInput.Focus()
+				return m, nil
+			case tea.KeyEsc, tea.KeyCtrlC:
+				m.saving = false
+				m.saveInput.Blur()
+				m.textInput.Focus()
+				return m, nil
+			}
+			m.saveInput, siCmd = m.saveInput.Update(msg)
+			return m, siCmd
+		}
+
 		switch msg.Type {
 		case tea.KeyCtrlC, tea.KeyEsc:
 			return m, tea.Quit
+		case tea.KeyCtrlS:
+			m.saving = true
+			m.saveInput.Focus()
+			m.saveInput.SetValue("output.log")
+			m.textInput.Blur()
+			return m, textinput.Blink
 		}
 
 	case tea.WindowSizeMsg:
-		headerHeight := 3 // title line + text input line + spacing
+		headerHeight := 4 // title line + text input line + status line + spacing
 		footerHeight := 0
 		verticalMarginHeight := headerHeight + footerHeight
 
@@ -48,6 +84,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.textInput, tiCmd = m.textInput.Update(msg)
 
 	if m.textInput.Value() != oldFilter {
+		m.lastSaved = ""
 		if m.textInput.Value() == "" {
 			m.filtered = m.allLogs
 		} else {
@@ -99,5 +136,38 @@ func (m model) headerView() string {
 		Render(strings.Repeat("─", width-lipgloss.Width(title)))
 
 	header := lipgloss.JoinHorizontal(lipgloss.Bottom, title, line)
-	return header + "\n" + m.textInput.View() + "\n"
+
+	if m.saving {
+		savePrompt := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#FFFF00")).
+			Bold(true).
+			Render(" SAVE TO: ")
+		return header + "\n" + m.textInput.View() + "\n" + savePrompt + m.saveInput.View() + "\n"
+	}
+
+	status := m.lastSaved
+	if status == "" {
+		status = lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("Ctrl+S: Save filtered results to output.log")
+	} else {
+		status = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render(status)
+	}
+
+	return header + "\n" + m.textInput.View() + "\n" + status + "\n"
+}
+
+func (m model) saveToFile(filename string) error {
+	f, err := os.Create(filename)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	writer := bufio.NewWriter(f)
+	for _, line := range m.filtered {
+		_, err := writer.WriteString(line + "\n")
+		if err != nil {
+			return err
+		}
+	}
+	return writer.Flush()
 }
